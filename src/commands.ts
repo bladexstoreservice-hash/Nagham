@@ -58,7 +58,7 @@ export type UserSession = {
 export const sessions = new Map<string, UserSession>();
 
 // ─── Sleep Mode Timers ───────────────────────────────────────────────
-export const SLEEP_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+export const SLEEP_DURATION_MS = 30 * 60 * 1000;
 export const sleepTimers = new Map<string, NodeJS.Timeout>();
 
 export function clearSleepTimer(userId: string): void {
@@ -356,20 +356,27 @@ export async function handleInfoCommand(
   });
 }
 
-// ─── Track Select ────────────────────────────────────────────────────
+// ─── Track Select (with defer) ───────────────────────────────────────
 export async function handleTrackSelect(
   interaction: StringSelectMenuInteraction,
   allTracks: Track[],
 ): Promise<void> {
   const userId = interaction.user.id;
 
+  // ⚡ DEFER IMMEDIATELY to prevent "Unknown interaction" (10062)
+  try {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  } catch {
+    // Interaction already expired — nothing we can do
+    return;
+  }
+
   if (!isUserInVoiceChannel(interaction)) {
-    await interaction.reply({
+    await interaction.editReply({
       content: bi(
         `🎧 **Voice channel required** · **الروم الصوتي مطلوب**`,
         `Join the voice channel to use this feature — انضم للروم الصوتي للاستخدام`,
       ),
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -377,12 +384,11 @@ export async function handleTrackSelect(
   const selectedId = interaction.values[0];
   const track = allTracks.find((t) => t.id === selectedId);
   if (!track) {
-    await interaction.reply({
+    await interaction.editReply({
       content: bi(
         `🔍 **Track not found** · **الأغنية غير موجودة**`,
         `The selected track is unavailable — الأغنية المحددة غير متوفرة`,
       ),
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -391,13 +397,12 @@ export async function handleTrackSelect(
   const cooldown = checkCooldown(userId, admin);
 
   if (!cooldown.allowed) {
-    await interaction.reply({
+    await interaction.editReply({
       content: bi(
         `⏳ **Music is already playing** · **الموسيقى شغّالة الآن**`,
         `Sit back & enjoy the current vibe — استرخِ واستمتع بالأجواء الحالية`,
         `**Try again in** · **حاول مجدداً بعد** · \`${formatRemaining(cooldown.remaining!)}\``,
       ),
-      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -405,12 +410,11 @@ export async function handleTrackSelect(
   playTrack(track);
   recordChange(userId);
 
-  await interaction.reply({
+  await interaction.editReply({
     content: bi(
       `🎵 **Now playing** · **قيد التشغيل الآن**`,
       `**${track.name}**`,
     ),
-    flags: MessageFlags.Ephemeral,
   });
 
   console.log(`[MUSIC] ${interaction.user.tag} changed track to: ${track.name}`);
@@ -425,7 +429,7 @@ export async function handleReloadCommand(
     await interaction.reply({
       content: bi(
         `🔒 **Admins only** · **للمدراء فقط**`,
-        `You don't have permission to use this command — لا تملك صلاحية استخدام هذا الأمر`,
+        `You don't have permission — لا تملك الصلاحية`,
       ),
       flags: MessageFlags.Ephemeral,
     });
@@ -583,7 +587,7 @@ export async function handleSetEmojiCommand(
     await interaction.reply({
       content: bi(
         `🔒 **Admins only** · **للمدراء فقط**`,
-        `You don't have permission to use this command — لا تملك صلاحية استخدام هذا الأمر`,
+        `You don't have permission — لا تملك الصلاحية`,
       ),
       flags: MessageFlags.Ephemeral,
     });
@@ -693,7 +697,7 @@ export async function handleClearEmojisCommand(
     await interaction.reply({
       content: bi(
         `🔒 **Admins only** · **للمدراء فقط**`,
-        `You don't have permission to use this command — لا تملك صلاحية استخدام هذا الأمر`,
+        `You don't have permission — لا تملك الصلاحية`,
       ),
       flags: MessageFlags.Ephemeral,
     });

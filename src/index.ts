@@ -533,10 +533,22 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await handleTrackSelect(interaction, allTracks);
       }
     }
-  } catch (err) {
+  } catch (err: unknown) {
+    const code = (err as { code?: number })?.code;
+
+    // Ignore expired interactions — normal on slow hosts like Render Free
+    if (code === 10062 || code === 40060) {
+      console.warn(`[WARN] Interaction expired (${code}) — ignored`);
+      return;
+    }
+
     console.error(`[ERROR] Interaction error: ${err}`);
     try {
-      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+      if (
+        interaction.isRepliable() &&
+        !interaction.replied &&
+        !interaction.deferred
+      ) {
         await interaction.reply({
           content: `❌ **Something went wrong** · **حدث خطأ ما**\n\n> Please try again in a moment · يرجى المحاولة بعد قليل`,
           flags: MessageFlags.Ephemeral,
