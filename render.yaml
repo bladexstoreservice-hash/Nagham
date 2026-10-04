@@ -1,10 +1,11 @@
 services:
   - type: web
-    name: naghm-music-bot
+    name: nagham
     env: node
     plan: free
     buildCommand: npm install && npm run build
     startCommand: npm start
+    healthCheckPath: /health   # <-- هذا هو السطر الجديد
     envVars:
       - key: DISCORD_TOKEN
         sync: false
