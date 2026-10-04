@@ -10,6 +10,7 @@ import {
   MessageFlags,
   Message,
 } from 'discord.js';
+import { CompressionMethod } from '@discordjs/ws';
 import {
   DISCORD_TOKEN,
   CLIENT_ID,
@@ -84,20 +85,28 @@ let refreshing = false;
 
 const welcomeMessages = new Map<string, Message>();
 
-// ─── Client ──────────────────────────────────────────────────────────
+// ─── Client (with WS optimizations) ──────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
   ],
+  ws: {
+    // Use zlib compression for faster WS transfers
+    compression: CompressionMethod.ZlibSync,
+    // Increase timeouts (Render Free can be slow at peak)
+    helloTimeout: 90_000,
+    handshakeTimeout: 60_000,
+  },
 });
 
-// ─── Debug Listeners (detect rate limits / silent failures) ─────────
+// ─── Debug Listeners ─────────────────────────────────────────────────
 client.on('debug', (info) => {
-  // Filter out noisy WS heartbeats to reduce log spam
+  // Filter noisy heartbeat messages
   if (info.includes('Heartbeat')) return;
-  if (info.includes('ws')) return;
+  if (info.includes('[WS => Shard 0] [DEBUG]')) return;
+  if (info.includes('First heartbeat')) return;
   console.log(`[DEBUG] ${info}`);
 });
 
@@ -111,9 +120,6 @@ client.on('rateLimited', (info) => {
   console.warn('═══════════════════════════════════════════');
   console.warn(`Timeout:  ${info.timeToReset}ms`);
   console.warn(`Limit:    ${info.limit}`);
-  console.warn(`Method:   ${info.method}`);
-  console.warn(`Path:     ${info.path}`);
-  console.warn(`Route:    ${info.route}`);
   console.warn(`Global:   ${info.global}`);
   console.warn('═══════════════════════════════════════════');
 });
@@ -526,7 +532,7 @@ setInterval(async () => {
   }
 }, 60_000);
 
-// ─── Memory Monitor (helps detect OOM on Render Free Tier) ───────────
+// ─── Memory Monitor ──────────────────────────────────────────────────
 setInterval(() => {
   const mem = process.memoryUsage();
   const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
@@ -554,18 +560,18 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-// ─── Login with Full Diagnostics ─────────────────────────────────────
+// ─── Login with Diagnostics ──────────────────────────────────────────
 console.log('═══════════════════════════════════════════');
 console.log('[BOOT] Starting Discord login...');
 console.log(`[BOOT] Token length:    ${DISCORD_TOKEN.length} chars`);
 console.log(`[BOOT] Token prefix:    ${DISCORD_TOKEN.slice(0, 10)}...`);
-console.log(`[BOOT] Token has space: ${/\s/.test(DISCORD_TOKEN)}`);
 console.log(`[BOOT] Client ID:       ${CLIENT_ID}`);
 console.log(`[BOOT] Guild ID:        ${GUILD_ID}`);
 console.log(`[BOOT] Voice Channel:   ${VOICE_CHANNEL_ID}`);
+console.log(`[BOOT] WS compression:  ${CompressionMethod.ZlibSync}`);
 console.log('═══════════════════════════════════════════');
 
-// ─── Test Discord REST API reachability ──────────────────────────────
+// ─── Test REST API reachability ──────────────────────────────────────
 (async () => {
   try {
     console.log('[BOOT] Testing Discord REST API connectivity...');
@@ -579,42 +585,20 @@ console.log('══════════════════════�
     console.log(
       `[BOOT] ✅ REST API reachable (${elapsed}ms) — user: ${me.username} (${me.id})`,
     );
-    console.log('[BOOT] Network is fine. Problem is WebSocket Gateway or Intents.');
   } catch (err) {
     const e = err as { message?: string; code?: string; status?: number };
-    console.error('═══════════════════════════════════════════');
     console.error('❌ REST API TEST FAILED');
     console.error(`Message: ${e.message ?? 'Unknown'}`);
-    console.error(`Code:    ${e.code ?? 'N/A'}`);
     console.error(`Status:  ${e.status ?? 'N/A'}`);
-    if (e.status === 401) {
-      console.error('🔑 TOKEN IS INVALID (401 Unauthorized)');
-    }
-    if (e.status === 429) {
-      console.error('⚠️  RATE LIMITED (429) — Shared IP blocked by Discord');
-      console.error('   → Solution: Use dedicated IP or different host');
-    }
-    console.error('═══════════════════════════════════════════');
+    if (e.status === 401) console.error('🔑 TOKEN IS INVALID');
+    if (e.status === 429) console.error('⚠️  RATE LIMITED');
   }
 })();
 
-// ─── Login with timeout ──────────────────────────────────────────────
-console.log('[BOOT] Calling client.login()...');
-
+// ─── Login ───────────────────────────────────────────────────────────
 const loginTimeout = setTimeout(() => {
-  console.error('═══════════════════════════════════════════');
-  console.error('❌ LOGIN TIMEOUT — no response after 30 seconds');
-  console.error('═══════════════════════════════════════════');
-  console.error('Possible causes:');
-  console.error('  1. Intents are disabled in Developer Portal');
-  console.error('  2. Render\'s IP is blocked by Discord (rate limit)');
-  console.error('  3. Discord Gateway is unreachable');
-  console.error('');
-  console.error('Diagnostics:');
-  console.error('  → Check [DEBUG] / [WARN] logs above for 429 errors');
-  console.error('  → Solution: Move to a host with a dedicated IP');
-  console.error('═══════════════════════════════════════════');
-}, 30_000);
+  console.error('❌ LOGIN TIMEOUT — no response after 60 seconds');
+}, 60_000);
 
 client
   .login(DISCORD_TOKEN)
@@ -625,31 +609,14 @@ client
   .catch((err: unknown) => {
     clearTimeout(loginTimeout);
     const error = err as { message?: string; code?: string };
-    console.error('═══════════════════════════════════════════');
     console.error('❌ LOGIN FAILED');
-    console.error('═══════════════════════════════════════════');
     console.error(`Message: ${error.message ?? 'Unknown'}`);
     console.error(`Code:    ${error.code ?? 'N/A'}`);
-    console.error('');
 
-    if (
-      error.message?.includes('TOKEN_INVALID') ||
-      error.message?.includes('An invalid token')
-    ) {
-      console.error('🔑 DISCORD_TOKEN IS INVALID!');
-      console.error('   → Render Dashboard → Environment → Update DISCORD_TOKEN');
+    if (error.message?.includes('TOKEN_INVALID') || error.message?.includes('An invalid token')) {
+      console.error('🔑 DISCORD_TOKEN IS INVALID! → Update in Render Environment');
     }
-
     if (error.message?.includes('disallowed intents')) {
-      console.error('🔒 INTENTS ISSUE!');
-      console.error('   → Developer Portal → Bot → Enable ALL Privileged Intents');
+      console.error('🔒 INTENTS ISSUE! → Enable ALL Privileged Intents');
     }
-
-    if (error.message?.includes('429') || error.message?.includes('rate limit')) {
-      console.error('⚠️  RATE LIMITED!');
-      console.error('   → Render Shared IP is blocked');
-      console.error('   → Solution: Move to a dedicated IP host');
-    }
-
-    console.error('═══════════════════════════════════════════');
   });

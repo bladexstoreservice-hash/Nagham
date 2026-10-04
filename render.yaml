@@ -3,9 +3,11 @@ services:
     name: nagham
     env: node
     plan: free
+    region: frankfurt
     buildCommand: npm install && npm run build
     startCommand: npm start
-    healthCheckPath: /health   # <-- هذا هو السطر الجديد
+    healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: DISCORD_TOKEN
         sync: false
