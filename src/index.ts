@@ -85,8 +85,6 @@ let refreshing = false;
 const welcomeMessages = new Map<string, Message>();
 
 // ─── Client ──────────────────────────────────────────────────────────
-// NOTE: zlib-sync is installed → discord.js automatically enables
-// WebSocket compression. No need for `ws.compression` option.
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -270,31 +268,86 @@ function buildWelcomeMessage(userId: string, totalMs: number): string {
   ].join('\n');
 }
 
+// ─── Send Welcome Message (with full diagnostics) ────────────────────
 async function sendWelcomeMessage(userId: string): Promise<void> {
   try {
+    console.log(`[WELCOME] Attempting to send for ${userId}...`);
+
     const guild = client.guilds.cache.get(GUILD_ID);
-    if (!guild) return;
+    if (!guild) {
+      console.warn(`[WELCOME] ❌ Guild ${GUILD_ID} not in cache`);
+      return;
+    }
 
-    const voiceChannel = guild.channels.cache.get(VOICE_CHANNEL_ID);
-    if (!voiceChannel || !voiceChannel.isVoiceBased()) return;
+    // Get channel — try cache first, then API
+    const cachedChannel = guild.channels.cache.get(VOICE_CHANNEL_ID);
+    let voiceChannel = cachedChannel;
 
+    if (!voiceChannel) {
+      console.log(`[WELCOME] Channel not in cache, fetching from API...`);
+      try {
+        const fetched = await client.channels.fetch(VOICE_CHANNEL_ID);
+
+        if (
+          !fetched ||
+          !fetched.isVoiceBased() ||
+          !('guild' in fetched) ||
+          fetched.guild?.id !== GUILD_ID
+        ) {
+          console.warn(
+            `[WELCOME] ❌ Fetched channel is not a voice channel in target guild`,
+          );
+          return;
+        }
+
+        voiceChannel = fetched as typeof voiceChannel;
+      } catch (err) {
+        console.warn(`[WELCOME] ❌ Failed to fetch channel: ${err}`);
+        return;
+      }
+    }
+
+    if (!voiceChannel || !voiceChannel.isVoiceBased()) {
+      console.warn(`[WELCOME] ❌ Channel ${VOICE_CHANNEL_ID} is not a voice channel`);
+      return;
+    }
+
+    // Check bot permissions in this channel
+    const me = guild.members.me;
+    if (me) {
+      const perms = voiceChannel.permissionsFor(me);
+      const canView = perms?.has('ViewChannel') ?? false;
+      const canSend = perms?.has('SendMessages') ?? false;
+      console.log(
+        `[WELCOME] Permissions — ViewChannel: ${canView}, SendMessages: ${canSend}`,
+      );
+
+      if (!canSend) {
+        console.warn(`[WELCOME] ❌ Bot lacks SendMessages permission in this channel!`);
+        return;
+      }
+    }
+
+    // Delete any old welcome message for this user first
     const oldMsg = welcomeMessages.get(userId);
     if (oldMsg) {
       await oldMsg.delete().catch(() => {});
       welcomeMessages.delete(userId);
     }
 
-    const sender = voiceChannel as unknown as {
-      send: (options: { content: string }) => Promise<Message>;
-    };
-    if (typeof sender.send !== 'function') return;
-
+    // Send the message
     const totalMs = getTotalTimeMs(userId);
     const content = buildWelcomeMessage(userId, totalMs);
 
-    const msg = await sender.send({ content });
-    welcomeMessages.set(userId, msg);
+    const textChannel = voiceChannel as unknown as {
+      send(options: { content: string }): Promise<Message>;
+    };
 
+    const msg = await textChannel.send({ content });
+    welcomeMessages.set(userId, msg);
+    console.log(`[WELCOME] ✅ Sent to ${userId} (msg: ${msg.id})`);
+
+    // Auto-delete timer
     setTimeout(() => {
       const current = welcomeMessages.get(userId);
       if (current?.id === msg.id) {
@@ -302,10 +355,8 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
         welcomeMessages.delete(userId);
       }
     }, WELCOME_DELETE_AFTER);
-
-    console.log(`[WELCOME] Sent to ${userId}`);
   } catch (err) {
-    console.warn(`[WARN] Failed to send welcome message: ${err}`);
+    console.error(`[WELCOME] ❌ Failed to send welcome message: ${err}`);
   }
 }
 
