@@ -9,6 +9,7 @@ import {
   Routes,
   MessageFlags,
   Message,
+  type VoiceBasedChannel,
 } from 'discord.js';
 import {
   DISCORD_TOKEN,
@@ -268,7 +269,7 @@ function buildWelcomeMessage(userId: string, totalMs: number): string {
   ].join('\n');
 }
 
-// ─── Send Welcome Message (with full diagnostics) ────────────────────
+// ─── Send Welcome Message ────────────────────────────────────────────
 async function sendWelcomeMessage(userId: string): Promise<void> {
   try {
     console.log(`[WELCOME] Attempting to send for ${userId}...`);
@@ -279,9 +280,13 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       return;
     }
 
-    // Get channel — try cache first, then API
-    const cachedChannel = guild.channels.cache.get(VOICE_CHANNEL_ID);
-    let voiceChannel = cachedChannel;
+    // Resolve the voice channel — cache first, fallback to API
+    let voiceChannel: VoiceBasedChannel | null = null;
+
+    const cached = guild.channels.cache.get(VOICE_CHANNEL_ID);
+    if (cached && cached.isVoiceBased()) {
+      voiceChannel = cached;
+    }
 
     if (!voiceChannel) {
       console.log(`[WELCOME] Channel not in cache, fetching from API...`);
@@ -300,15 +305,15 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
           return;
         }
 
-        voiceChannel = fetched as typeof voiceChannel;
+        voiceChannel = fetched as VoiceBasedChannel;
       } catch (err) {
         console.warn(`[WELCOME] ❌ Failed to fetch channel: ${err}`);
         return;
       }
     }
 
-    if (!voiceChannel || !voiceChannel.isVoiceBased()) {
-      console.warn(`[WELCOME] ❌ Channel ${VOICE_CHANNEL_ID} is not a voice channel`);
+    if (!voiceChannel) {
+      console.warn(`[WELCOME] ❌ Voice channel unavailable`);
       return;
     }
 
@@ -328,14 +333,14 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       }
     }
 
-    // Delete any old welcome message for this user first
+    // Delete old welcome message for this user
     const oldMsg = welcomeMessages.get(userId);
     if (oldMsg) {
       await oldMsg.delete().catch(() => {});
       welcomeMessages.delete(userId);
     }
 
-    // Send the message
+    // Send welcome message
     const totalMs = getTotalTimeMs(userId);
     const content = buildWelcomeMessage(userId, totalMs);
 
@@ -347,7 +352,7 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
     welcomeMessages.set(userId, msg);
     console.log(`[WELCOME] ✅ Sent to ${userId} (msg: ${msg.id})`);
 
-    // Auto-delete timer
+    // Auto-delete after 10 minutes
     setTimeout(() => {
       const current = welcomeMessages.get(userId);
       if (current?.id === msg.id) {
