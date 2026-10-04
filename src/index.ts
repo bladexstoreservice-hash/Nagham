@@ -72,8 +72,6 @@ if (ffmpegPath) {
 }
 
 // ─── Web Server (for Render / UptimeRobot) ───────────────────────────
-// Starts immediately so Render's health check passes even before the bot
-// finishes logging in.
 startWebServer();
 
 // ─── Globals ─────────────────────────────────────────────────────────
@@ -107,6 +105,8 @@ function preservedAttachments(): Array<{ id: string; filename: string }> {
 async function refreshStickyPanel(): Promise<void> {
   if (!stickyPanel) return;
   if (refreshing) return;
+  // Guard: don't send an empty select menu
+  if (allTracks.length === 0) return;
 
   refreshing = true;
   try {
@@ -202,11 +202,18 @@ async function ensureStickyPanel(): Promise<void> {
       attachedImagePath = null;
       lastImageCdnUrl = null;
       console.log('[PANEL] Recovered existing sticky panel');
-      await refreshStickyPanel();
+      if (allTracks.length > 0) {
+        await refreshStickyPanel();
+      }
       return;
     }
   } catch (err) {
     console.warn(`[WARN] Could not fetch VC messages: ${err}`);
+  }
+
+  if (allTracks.length === 0) {
+    console.warn('[PANEL] Skipping creation — no tracks loaded yet');
+    return;
   }
 
   try {
@@ -494,12 +501,20 @@ setInterval(async () => {
   }
 }, 60_000);
 
+// ─── Memory Monitor (helps detect OOM on Render Free Tier) ───────────
+setInterval(() => {
+  const mem = process.memoryUsage();
+  const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+  const rssMB = Math.round(mem.rss / 1024 / 1024);
+  console.log(`[MEMORY] heap: ${heapMB} MB · rss: ${rssMB} MB`);
+}, 10 * 60 * 1000);
+
 // ─── Error Handling ──────────────────────────────────────────────────
 client.on(Events.Error, (err) => console.error(`[ERROR] Client: ${err.message}`));
 process.on('unhandledRejection', (err) => console.error(`[ERROR] Unhandled: ${err}`));
 process.on('uncaughtException', (err) => console.error(`[ERROR] Uncaught: ${err.message}`));
 
-// ─── Graceful Shutdown (Render sends SIGTERM on deploy/restart) ──────
+// ─── Graceful Shutdown ───────────────────────────────────────────────
 process.on('SIGTERM', () => {
   console.log('[SHUTDOWN] SIGTERM received — shutting down gracefully');
   stopWebServer();
@@ -514,5 +529,52 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
-// ─── Login ───────────────────────────────────────────────────────────
-void client.login(DISCORD_TOKEN);
+// ─── Login with Full Diagnostics ─────────────────────────────────────
+console.log('═══════════════════════════════════════════');
+console.log('[BOOT] Starting Discord login...');
+console.log(`[BOOT] Token length:    ${DISCORD_TOKEN.length} chars`);
+console.log(`[BOOT] Token prefix:    ${DISCORD_TOKEN.slice(0, 10)}...`);
+console.log(`[BOOT] Token has space: ${/\s/.test(DISCORD_TOKEN)}`);
+console.log(`[BOOT] Client ID:       ${CLIENT_ID}`);
+console.log(`[BOOT] Guild ID:        ${GUILD_ID}`);
+console.log(`[BOOT] Voice Channel:   ${VOICE_CHANNEL_ID}`);
+console.log('═══════════════════════════════════════════');
+
+client
+  .login(DISCORD_TOKEN)
+  .then(() => {
+    console.log('[BOOT] ✅ client.login() resolved successfully');
+  })
+  .catch((err: unknown) => {
+    const error = err as { message?: string; code?: string };
+    console.error('═══════════════════════════════════════════');
+    console.error('❌ LOGIN FAILED');
+    console.error('═══════════════════════════════════════════');
+    console.error(`Message: ${error.message ?? 'Unknown'}`);
+    console.error(`Code:    ${error.code ?? 'N/A'}`);
+    console.error('');
+
+    if (
+      error.message?.includes('TOKEN_INVALID') ||
+      error.message?.includes('An invalid token')
+    ) {
+      console.error('🔑 DISCORD_TOKEN IS INVALID!');
+      console.error('   → Fix: Render Dashboard → Environment');
+      console.error('   → Update DISCORD_TOKEN with a fresh value');
+      console.error('   → Get it from Discord Developer Portal');
+    }
+
+    if (error.message?.includes('disallowed intents')) {
+      console.error('🔒 INTENTS ISSUE!');
+      console.error('   → Discord Developer Portal → Bot');
+      console.error('   → Enable: Server Members Intent + Message Content Intent');
+    }
+
+    if (error.message?.includes('ENOTFOUND') || error.message?.includes('ETIMEDOUT')) {
+      console.error('🌐 NETWORK ISSUE!');
+      console.error('   → Render cannot reach Discord API');
+      console.error('   → Check network / try restarting the service');
+    }
+
+    console.error('═══════════════════════════════════════════');
+  });
