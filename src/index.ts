@@ -10,7 +10,6 @@ import {
   MessageFlags,
   Message,
 } from 'discord.js';
-import { CompressionMethod } from '@discordjs/ws';
 import {
   DISCORD_TOKEN,
   CLIENT_ID,
@@ -85,27 +84,20 @@ let refreshing = false;
 
 const welcomeMessages = new Map<string, Message>();
 
-// ─── Client (with WS optimizations) ──────────────────────────────────
+// ─── Client ──────────────────────────────────────────────────────────
+// NOTE: zlib-sync is installed → discord.js automatically enables
+// WebSocket compression. No need for `ws.compression` option.
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
   ],
-  ws: {
-    // Use zlib compression for faster WS transfers
-    compression: CompressionMethod.ZlibSync,
-    // Increase timeouts (Render Free can be slow at peak)
-    helloTimeout: 90_000,
-    handshakeTimeout: 60_000,
-  },
 });
 
 // ─── Debug Listeners ─────────────────────────────────────────────────
 client.on('debug', (info) => {
-  // Filter noisy heartbeat messages
   if (info.includes('Heartbeat')) return;
-  if (info.includes('[WS => Shard 0] [DEBUG]')) return;
   if (info.includes('First heartbeat')) return;
   console.log(`[DEBUG] ${info}`);
 });
@@ -423,25 +415,20 @@ client.on(Events.MessageDelete, async (message) => {
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   const userId = newState.id;
 
-  // ─── User left ──────────────────────────────────────────────────
   if (oldState.channelId === VOICE_CHANNEL_ID && newState.channelId !== VOICE_CHANNEL_ID) {
     recordLeave(userId);
     clearSleepTimer(userId);
     console.log(`[COOLDOWN] ${newState.member?.user.tag ?? userId} left voice`);
-
     await deleteWelcomeMessage(userId);
   }
 
-  // ─── User joined (ignore bots) ──────────────────────────────────
   if (
     newState.channelId === VOICE_CHANNEL_ID &&
     oldState.channelId !== VOICE_CHANNEL_ID
   ) {
     if (newState.member?.user.bot) return;
-
     recordJoin(userId);
     console.log(`[COOLDOWN] ${newState.member?.user.tag ?? userId} joined voice (5m)`);
-
     await sendWelcomeMessage(userId);
   }
 });
@@ -568,7 +555,7 @@ console.log(`[BOOT] Token prefix:    ${DISCORD_TOKEN.slice(0, 10)}...`);
 console.log(`[BOOT] Client ID:       ${CLIENT_ID}`);
 console.log(`[BOOT] Guild ID:        ${GUILD_ID}`);
 console.log(`[BOOT] Voice Channel:   ${VOICE_CHANNEL_ID}`);
-console.log(`[BOOT] WS compression:  ${CompressionMethod.ZlibSync}`);
+console.log('[BOOT] WS compression:  auto (zlib-sync installed)');
 console.log('═══════════════════════════════════════════');
 
 // ─── Test REST API reachability ──────────────────────────────────────
