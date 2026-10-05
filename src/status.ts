@@ -2,6 +2,7 @@ import { ActivityType, Client } from 'discord.js';
 import {
   STATUS_INTERVAL,
   VOICE_CHANNEL_ID,
+  STATUS_TIMEZONE,
   TIME_PERIODS,
   MORNING_STATUSES,
   NEUTRAL_STATUSES,
@@ -9,7 +10,6 @@ import {
   NIGHT_STATUSES,
 } from './config.js';
 
-// ─── Track last picked per period to avoid immediate repeats ─────────
 const lastPickedIndex: Record<string, number> = {
   MORNING: -1,
   NEUTRAL: -1,
@@ -17,13 +17,21 @@ const lastPickedIndex: Record<string, number> = {
   NIGHT: -1,
 };
 
-// ─── Detect current time period ──────────────────────────────────────
 export type TimePeriod = 'MORNING' | 'NEUTRAL' | 'SUNSET' | 'NIGHT';
 
-export function getCurrentPeriod(): TimePeriod {
-  const hour = new Date().getHours();
+// ─── Get current hour in Germany ─────────────────────────────────────
+function getGermanHour(): number {
+  const formatted = new Intl.DateTimeFormat('en-GB', {
+    timeZone: STATUS_TIMEZONE,
+    hour: 'numeric',
+    hour12: false,
+  }).format(new Date());
+  return parseInt(formatted, 10);
+}
 
-  // Night wraps around midnight (20:00 → 04:59)
+export function getCurrentPeriod(): TimePeriod {
+  const hour = getGermanHour();
+
   if (hour >= TIME_PERIODS.NIGHT.start || hour < TIME_PERIODS.NIGHT.end) {
     return 'NIGHT';
   }
@@ -36,7 +44,6 @@ export function getCurrentPeriod(): TimePeriod {
   return 'NEUTRAL';
 }
 
-// ─── Get statuses list for the current period ────────────────────────
 function getStatusesForPeriod(period: TimePeriod): string[] {
   switch (period) {
     case 'MORNING': return MORNING_STATUSES;
@@ -46,17 +53,12 @@ function getStatusesForPeriod(period: TimePeriod): string[] {
   }
 }
 
-// ─── Pick a random status within the current period ──────────────────
 function pickRandomStatus(): { text: string; period: TimePeriod } {
   const period = getCurrentPeriod();
   const pool = getStatusesForPeriod(period);
 
-  if (pool.length === 0) {
-    return { text: '🎵 24/7 Music', period };
-  }
-  if (pool.length === 1) {
-    return { text: pool[0]!, period };
-  }
+  if (pool.length === 0) return { text: '🎵 24/7 Music', period };
+  if (pool.length === 1) return { text: pool[0]!, period };
 
   let index: number;
   do {
@@ -67,7 +69,6 @@ function pickRandomStatus(): { text: string; period: TimePeriod } {
   return { text: pool[index]!, period };
 }
 
-// ─── Set Bot Presence ────────────────────────────────────────────────
 function setPresence(client: Client, statusText: string): void {
   try {
     client.user?.setPresence({
@@ -79,34 +80,32 @@ function setPresence(client: Client, statusText: string): void {
   }
 }
 
-// ─── Try Set Voice Channel Status ────────────────────────────────────
 async function setVoiceChannelStatus(client: Client, statusText: string): Promise<void> {
   try {
     await client.rest.put(`/channels/${VOICE_CHANNEL_ID}/voice-status`, {
       body: { status: statusText },
     });
   } catch (err) {
-    console.warn(`[WARN] Failed to set voice channel status: ${err}`);
+    console.warn(`[WARN] Failed to set VC status: ${err}`);
   }
 }
 
-// ─── Apply Status ────────────────────────────────────────────────────
 async function applyStatus(client: Client): Promise<void> {
   const { text, period } = pickRandomStatus();
+  const hour = getGermanHour();
   setPresence(client, text);
   await setVoiceChannelStatus(client, text);
-  console.log(`[STATUS] [${period}] → ${text}`);
+  console.log(`[STATUS] [${period} · ${hour}:00 DE] → ${text}`);
 }
 
-// ─── Start Timer ─────────────────────────────────────────────────────
 export function startStatusTimer(client: Client): void {
-  // Initial
   void applyStatus(client);
 
-  // Every 30 min
   setInterval(() => {
     void applyStatus(client);
   }, STATUS_INTERVAL);
 
-  console.log(`[STATUS] Dynamic status timer started (every ${STATUS_INTERVAL / 60000} min)`);
+  console.log(
+    `[STATUS] Dynamic timer started (every ${STATUS_INTERVAL / 60000} min · timezone: ${STATUS_TIMEZONE})`,
+  );
 }

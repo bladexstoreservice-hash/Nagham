@@ -11,20 +11,8 @@ export const CLIENT_ID = process.env.CLIENT_ID ?? '';
 export const GUILD_ID = process.env.GUILD_ID ?? '';
 export const VOICE_CHANNEL_ID = process.env.VOICE_CHANNEL_ID ?? '';
 
-if (!DISCORD_TOKEN) {
-  console.error('[ERROR] DISCORD_TOKEN is missing in .env');
-  process.exit(1);
-}
-if (!CLIENT_ID) {
-  console.error('[ERROR] CLIENT_ID is missing in .env');
-  process.exit(1);
-}
-if (!GUILD_ID) {
-  console.error('[ERROR] GUILD_ID is missing in .env');
-  process.exit(1);
-}
-if (!VOICE_CHANNEL_ID) {
-  console.error('[ERROR] VOICE_CHANNEL_ID is missing in .env');
+if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !VOICE_CHANNEL_ID) {
+  console.error('[ERROR] Missing environment variables in .env');
   process.exit(1);
 }
 
@@ -34,16 +22,16 @@ export const MUSIC_DIR = path.join(PROJECT_ROOT, 'Music');
 export const IMAGES_DIR = path.join(PROJECT_ROOT, 'Images');
 
 // ─── Cooldowns ───────────────────────────────────────────────────────
-export const FIRST_CHANGE_COOLDOWN = 5 * 60 * 1000;  // 5 دقائق
-export const NEXT_CHANGE_COOLDOWN = 30 * 60 * 1000;  // 30 دقيقة
+export const FIRST_CHANGE_COOLDOWN = 5 * 60 * 1000;
+export const NEXT_CHANGE_COOLDOWN = 30 * 60 * 1000;
 
 // ─── Status ──────────────────────────────────────────────────────────
-export const STATUS_INTERVAL = 30 * 60 * 1000; // 30 دقيقة
-export const WELCOME_DELETE_AFTER = 10 * 60 * 1000; // 10 دقائق
-export const WELCOME_UPDATE_INTERVAL = 15 * 1000;   // 15 ثانية — تحديث حيّ
+export const STATUS_INTERVAL = 15 * 60 * 1000; // ✅ 15 دقيقة
+export const WELCOME_UPDATE_INTERVAL = 15 * 1000;
+export const STATUS_TIMEZONE = 'Europe/Berlin'; // ✅ توقيت ألمانيا
 
 // ─── Panel ───────────────────────────────────────────────────────────
-export const PANEL_UPDATE_INTERVAL = 15_000; // 15 ثانية
+export const PANEL_UPDATE_INTERVAL = 15_000;
 export const EMBED_COLOR = 0x595959;
 
 // ─── Progress Bar Emojis ─────────────────────────────────────────────
@@ -63,15 +51,15 @@ export type Track = {
   duration?: number;
 };
 
-// ─── Time Periods (hours, 24h local) ─────────────────────────────────
+// ─── Time Periods (Germany local hours) ──────────────────────────────
 export const TIME_PERIODS = {
-  MORNING: { start: 5, end: 11 },    // 05:00 → 10:59
-  NEUTRAL: { start: 11, end: 17 },   // 11:00 → 16:59
-  SUNSET:  { start: 17, end: 20 },   // 17:00 → 19:59
-  NIGHT:   { start: 20, end: 5 },    // 20:00 → 04:59 (wraps midnight)
+  MORNING: { start: 5, end: 11 },
+  NEUTRAL: { start: 11, end: 17 },
+  SUNSET:  { start: 17, end: 20 },
+  NIGHT:   { start: 20, end: 5 },
 } as const;
 
-// ─── Morning Statuses (20) — 🌅 Sun, Light, Fresh Start ─────────────
+// ─── Morning Statuses (25) ───────────────────────────────────────────
 export const MORNING_STATUSES: string[] = [
   'Morning Breeze ∙ نسيم الصباح 🍃',
   'Sunrise Glow ∙ وهج الشروق 🌅',
@@ -93,9 +81,14 @@ export const MORNING_STATUSES: string[] = [
   'Gentle Morning ∙ صباح لطيف 🌤️',
   'Sunrise & Oud ∙ شروق وعود 🌿',
   'Daylight Begins ∙ يبدأ النهار ☀️',
+  'Dawn Colors ∙ ألوان الفجر 🎨',
+  'Morning Birds ∙ طيور الصباح 🐦',
+  'First Sunbeam ∙ أول شعاع ☀️',
+  'Morning Mist ∙ ضباب الصباح 🌫️',
+  'Sunrise Serenity ∙ سكينة الشروق 🌄',
 ];
 
-// ─── Neutral Statuses (29) — ☀️ Calm, Rain, Damascus ────────────────
+// ─── Neutral Statuses (40) ───────────────────────────────────────────
 export const NEUTRAL_STATUSES: string[] = [
   'Soft Rain ∙ مطر هادئ 🌧️',
   'Rainy Mood ∙ أجواء ماطرة 🌧️',
@@ -126,9 +119,20 @@ export const NEUTRAL_STATUSES: string[] = [
   'Music & Damascus ∙ موسيقى ودمشق 🎶',
   'Peaceful Sham ∙ سكينة الشام 🤍',
   'Damascus & Oud ∙ دمشق وعود 🎵',
+  'Afternoon Calm ∙ هدوء بعد الظهر 🌤️',
+  'Balanced Mood ∙ مزاج متوازن ⚖️',
+  'Daylight Flow ∙ تدفق النهار ☀️',
+  'Midday Stillness ∙ سكون الظهيرة 🌞',
+  'Cloudy Days ∙ أيام غائمة ☁️',
+  'Bright Hours ∙ ساعات مشرقة ☀️',
+  'Clear Skies ∙ سماء صافية 🌤️',
+  'Peaceful Day ∙ يوم هادئ 🌿',
+  'Gentle Afternoon ∙ بعد ظهر لطيف 🍃',
+  'Soft Daylight ∙ ضوء نهار ناعم ✨',
+  'Calm Oasis ∙ واحة هادئة 🏝️',
 ];
 
-// ─── Sunset Statuses (14) — 🌇 Dusk, Twilight, Golden ───────────────
+// ─── Sunset Statuses (25) ────────────────────────────────────────────
 export const SUNSET_STATUSES: string[] = [
   'Slow Evenings ∙ أمسيات على مهل 🌆',
   'Golden Evening ∙ مساء ذهبي 🌅',
@@ -144,9 +148,20 @@ export const SUNSET_STATUSES: string[] = [
   'Damascus Glow ∙ وهج الشام ✨',
   'Damascus Sunset ∙ غروب الشام 🌅',
   'Syrian Evening ∙ مساء سوري 🤍',
+  'Amber Sunset ∙ غروب كهرماني 🟠',
+  'Coral Twilight ∙ شفق مرجاني 🌸',
+  'Fading Light ∙ ضوء يتلاشى 🌅',
+  'Evening Colors ∙ ألوان المساء 🎨',
+  'Dusk Melody ∙ لحن الغروب 🎵',
+  'Golden Hour ∙ الساعة الذهبية ✨',
+  'Sunset Serenity ∙ سكينة الغروب 🌇',
+  'Twilight Glow ∙ وهج الشفق 🌆',
+  'Orange Horizon ∙ أفق برتقالي 🧡',
+  'Evening Breeze ∙ نسيم المساء 🍃',
+  'Purple Dusk ∙ غسق بنفسجي 💜',
 ];
 
-// ─── Night Statuses (37) — 🌙 Moon, Night, Relax ────────────────────
+// ─── Night Statuses (60) ─────────────────────────────────────────────
 export const NIGHT_STATUSES: string[] = [
   'Cozy Nights ∙ ليالٍ دافئة 🤍',
   'Quiet Evenings ∙ أمسيات هادئة 🌙',
@@ -185,9 +200,31 @@ export const NIGHT_STATUSES: string[] = [
   'Jasmine & Moon ∙ ياسمين وقمر 🌙',
   'Quiet Nights ∙ ليالٍ هادئة 🌌',
   'Candlelit Damascus ∙ شام على ضوء الشموع 🕯️',
+  'Starlit Sky ∙ سماء مرصعة بالنجوم ⭐',
+  'Moonlight Sonata ∙ سوناتا ضوء القمر 🎹',
+  'Dark Calm ∙ هدوء داكن 🌑',
+  'Midnight Thoughts ∙ أفكار منتصف الليل 💭',
+  'Silent Night ∙ ليلة صامتة 🌌',
+  'Mystic Nights ∙ ليالٍ غامضة 🔮',
+  'Deep Night ∙ ليل عميق 🌌',
+  'Velvet Sky ∙ سماء مخملية 🌌',
+  'Night Whispers ∙ همسات الليل 🤫',
+  'Stars & Dreams ∙ نجوم وأحلام ⭐',
+  'Peaceful Night ∙ ليلة هادئة 🤍',
+  'Late Night Vibes ∙ أجواء آخر الليل 🌙',
+  'Moonlit Path ∙ طريق تحت القمر 🌙',
+  'Twilight Dreams ∙ أحلام الشفق 💫',
+  'Moonbeams ∙ أشعة القمر ✨',
+  'Sleepy Hollow ∙ وادي النوم 😴',
+  'Night in Berlin ∙ ليل برلين 🌃',
+  'Candle Glow ∙ توهج الشمعة 🕯️',
+  'Dark Forest ∙ غابة مظلمة 🌲',
+  'Cosmic Peace ∙ سلام كوني 🌠',
+  'Moonrise ∙ شروق القمر 🌕',
+  'Serene Dark ∙ سكينة الظلام 🌌',
+  'Silent Stars ∙ نجوم صامتة ⭐',
 ];
 
-// ─── Legacy export (all statuses combined) ───────────────────────────
 export const STATUSES: string[] = [
   ...MORNING_STATUSES,
   ...NEUTRAL_STATUSES,
