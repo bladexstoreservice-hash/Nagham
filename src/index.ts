@@ -9,7 +9,6 @@ import {
   Routes,
   MessageFlags,
   Message,
-  type VoiceBasedChannel,
 } from 'discord.js';
 import {
   DISCORD_TOKEN,
@@ -17,7 +16,6 @@ import {
   GUILD_ID,
   VOICE_CHANNEL_ID,
   PANEL_UPDATE_INTERVAL,
-  WELCOME_DELETE_AFTER,
   WELCOME_UPDATE_INTERVAL,
   Track,
 } from './config.js';
@@ -31,6 +29,7 @@ import {
 } from './musicPlayer.js';
 import { startStatusTimer } from './status.js';
 import { loadEmojis, validateEmojis } from './emojiStore.js';
+import { loadStats, saveStats } from './statsStore.js';
 import {
   getCommands,
   handleMusicCommand,
@@ -49,7 +48,6 @@ import {
   handleSleepButton,
   clearSleepTimer,
   setOnPanelUpdate,
-  sessions,
   recordJoin,
   recordLeave,
   getTotalTimeMs,
@@ -85,14 +83,13 @@ let refreshing = false;
 
 const welcomeMessages = new Map<string, Message>();
 
+// ─── Watchdog State ──────────────────────────────────────────────────
+let lastGatewayEventAt = Date.now();
+let lastUserActivityAt = Date.now();
+let reconnectAttempts = 0;
+
 // ─── REST client ─────────────────────────────────────────────────────
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-
-// ─── Watchdog State ──────────────────────────────────────────────────
-let lastGatewayEventAt = Date.now();      // last event received
-let lastUserActivityAt = Date.now();      // last interaction/voice event
-let lastRESTSuccessAt = Date.now();       // last successful REST call
-let reconnectAttempts = 0;
 
 // ─── Client ──────────────────────────────────────────────────────────
 const client = new Client({
@@ -103,7 +100,7 @@ const client = new Client({
   ],
 });
 
-// ─── Raw Packet Tracker (for watchdog) ───────────────────────────────
+// ─── Raw packet tracker (for watchdog) ───────────────────────────────
 client.on('raw', (packet: { t?: string }) => {
   lastGatewayEventAt = Date.now();
 
@@ -129,13 +126,9 @@ client.on('warn', (info) => {
 });
 
 client.on('rateLimited', (info) => {
-  console.warn('═══════════════════════════════════════════');
-  console.warn('⚠️  RATE LIMITED BY DISCORD');
-  console.warn('═══════════════════════════════════════════');
-  console.warn(`Timeout:  ${info.timeToReset}ms`);
-  console.warn(`Limit:    ${info.limit}`);
-  console.warn(`Global:   ${info.global}`);
-  console.warn('═══════════════════════════════════════════');
+  console.warn(
+    `[RATE-LIMIT] timeout=${info.timeToReset}ms · limit=${info.limit} · global=${info.global}`,
+  );
 });
 
 // ─── Preserved Attachments ───────────────────────────────────────────
@@ -292,7 +285,7 @@ function buildWelcomeMessage(userId: string, totalMs: number): string {
   ].join('\n');
 }
 
-// ─── Send Welcome Message (via REST) ─────────────────────────────────
+// ─── Send Welcome Message (via REST — permanent until user leaves) ───
 async function sendWelcomeMessage(userId: string): Promise<void> {
   try {
     console.log(`[WELCOME] Attempting to send for ${userId}...`);
@@ -305,25 +298,24 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
 
     const channel = guild.channels.cache.get(VOICE_CHANNEL_ID);
     if (!channel || !channel.isVoiceBased()) {
-      console.warn(`[WELCOME] ❌ Channel ${VOICE_CHANNEL_ID} not a voice channel`);
+      console.warn(`[WELCOME] ❌ Channel not a voice channel`);
       return;
     }
 
     const me = guild.members.me;
     if (me) {
       const perms = channel.permissionsFor(me);
-      const canView = perms?.has('ViewChannel') ?? false;
       const canSend = perms?.has('SendMessages') ?? false;
       console.log(
-        `[WELCOME] Permissions — ViewChannel: ${canView}, SendMessages: ${canSend}`,
+        `[WELCOME] Permissions — ViewChannel: ${perms?.has('ViewChannel')}, SendMessages: ${canSend}`,
       );
-
       if (!canSend) {
-        console.warn(`[WELCOME] ❌ Bot lacks SendMessages permission`);
+        console.warn(`[WELCOME] ❌ Bot lacks SendMessages`);
         return;
       }
     }
 
+    // Delete old welcome message for this user
     const oldMsg = welcomeMessages.get(userId);
     if (oldMsg) {
       await oldMsg.delete().catch(() => {});
@@ -335,43 +327,23 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
 
     const raw = (await rest.post(Routes.channelMessages(VOICE_CHANNEL_ID), {
       body: { content },
-    })) as { id: string; channel_id: string };
+    })) as { id: string };
 
     console.log(`[WELCOME] ✅ Sent to ${userId} (msg: ${raw.id})`);
 
-    let tracked = false;
+    // Try to fetch for later deletion
     try {
       const msg = await channel.messages.fetch(raw.id);
       welcomeMessages.set(userId, msg);
-      tracked = true;
-    } catch (fetchErr) {
-      console.warn(`[WELCOME] Could not fetch message object: ${fetchErr}`);
+    } catch {
+      // ignore
     }
-
-    setTimeout(async () => {
-      const current = welcomeMessages.get(userId);
-      const targetId = current?.id ?? raw.id;
-
-      try {
-        if (current && current.id === raw.id) {
-          await current.delete().catch(() => {});
-        } else if (!tracked) {
-          await rest
-            .delete(Routes.channelMessage(VOICE_CHANNEL_ID, raw.id))
-            .catch(() => {});
-        }
-      } catch {
-        // ignore
-      }
-      if (current?.id === targetId) {
-        welcomeMessages.delete(userId);
-      }
-    }, WELCOME_DELETE_AFTER);
   } catch (err) {
-    console.error(`[WELCOME] ❌ Failed to send welcome message: ${err}`);
+    console.error(`[WELCOME] ❌ Failed: ${err}`);
   }
 }
 
+// ─── Delete Welcome Message (when user leaves) ───────────────────────
 async function deleteWelcomeMessage(userId: string): Promise<void> {
   const msg = welcomeMessages.get(userId);
   if (!msg) return;
@@ -391,6 +363,7 @@ async function deleteWelcomeMessage(userId: string): Promise<void> {
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`[READY] Bot logged in as ${readyClient.user.tag}`);
 
+  loadStats();
   loadEmojis();
   await validateEmojis(readyClient);
   console.log(`[EMOJI] Validation complete`);
@@ -493,7 +466,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   ) {
     if (newState.member?.user.bot) return;
     recordJoin(userId);
-    console.log(`[COOLDOWN] ${newState.member?.user.tag ?? userId} joined voice (5m)`);
+    console.log(`[COOLDOWN] ${newState.member?.user.tag ?? userId} joined voice`);
     await sendWelcomeMessage(userId);
   }
 });
@@ -595,79 +568,62 @@ setInterval(async () => {
   }
 }, 60_000);
 
-// ═════════════════════════════════════════════════════════════════════
-//  WATCHDOG — detects stale Gateway and forces reconnect
-// ═════════════════════════════════════════════════════════════════════
+// ─── Stats periodic save (every 5 minutes) ───────────────────────────
+setInterval(() => {
+  saveStats();
+  console.log('[STATS] Periodic save');
+}, 5 * 60 * 1000);
+
+// ─── WATCHDOG ────────────────────────────────────────────────────────
 setInterval(async () => {
   const now = Date.now();
   const sinceEvent = now - lastGatewayEventAt;
   const sinceUserActivity = now - lastUserActivityAt;
 
-  // Ping REST to verify network is alive
   let restAlive = false;
   try {
     await rest.get(Routes.gateway());
     restAlive = true;
-    lastRESTSuccessAt = now;
   } catch {
     restAlive = false;
   }
 
-  // Log status
   console.log(
     `[WATCHDOG] sinceEvent=${Math.round(sinceEvent / 1000)}s · ` +
       `sinceUserActivity=${Math.round(sinceUserActivity / 1000)}s · ` +
-      `REST=${restAlive ? 'ok' : 'fail'} · ` +
-      `attempts=${reconnectAttempts}`,
+      `REST=${restAlive ? 'ok' : 'fail'} · attempts=${reconnectAttempts}`,
   );
 
-  // Decision: REST works, Gateway is silent, users were recently active
-  const gatewayStale = sinceEvent > 3 * 60 * 1000;       // 3 minutes silent
-  const userWasActive = sinceUserActivity < 10 * 60 * 1000; // within last 10 min
+  const gatewayStale = sinceEvent > 5 * 60 * 1000;
 
-  if (restAlive && gatewayStale && userWasActive) {
+  if (restAlive && gatewayStale) {
     reconnectAttempts++;
     console.warn(
-      `[WATCHDOG] ⚠️  Gateway stale for ${Math.round(sinceEvent / 1000)}s — forcing reconnect (attempt ${reconnectAttempts})`,
+      `[WATCHDOG] ⚠️ Gateway silent ${Math.round(sinceEvent / 1000)}s — forcing WS reconnect (attempt ${reconnectAttempts})`,
     );
 
-    // Force reconnect by destroying the shard — discord.js auto-reconnects
     try {
-      const ws = client.ws as unknown as {
-        destroy: () => void;
-        shards: Map<number, { destroy: () => void; resume: () => void }>;
-      };
-
-      const shard = ws.shards?.get(0);
-      if (shard) {
-        try {
-          shard.resume();
-        } catch {
-          // ignore
-        }
-      } else if (typeof ws.destroy === 'function') {
-        ws.destroy();
+      const ws = client.ws as unknown as { destroy: () => Promise<void> };
+      if (typeof ws.destroy === 'function') {
+        await ws.destroy();
       }
-
-      lastGatewayEventAt = now; // reset counter
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      lastGatewayEventAt = Date.now();
+      console.log('[WATCHDOG] ✅ Reconnect attempt triggered');
     } catch (err) {
       console.error(`[WATCHDOG] Reconnect failed: ${err}`);
     }
   }
 
-  // If we've tried reconnecting 3+ times and Gateway is still dead, restart
-  if (reconnectAttempts >= 3 && gatewayStale) {
+  if (reconnectAttempts >= 4 && gatewayStale) {
     console.error(
-      `[WATCHDOG] 🚨 Gateway still dead after ${reconnectAttempts} attempts — exiting process (Render will restart)`,
+      `[WATCHDOG] 🚨 WS dead after ${reconnectAttempts} attempts — restarting`,
     );
     process.exit(1);
   }
 
-  // Reset attempts if the Gateway is healthy again
-  if (!gatewayStale) {
-    reconnectAttempts = 0;
-  }
-}, 2 * 60 * 1000); // every 2 minutes
+  if (!gatewayStale) reconnectAttempts = 0;
+}, 3 * 60 * 1000);
 
 // ─── Memory Monitor ──────────────────────────────────────────────────
 setInterval(() => {
@@ -683,19 +639,16 @@ process.on('unhandledRejection', (err) => console.error(`[ERROR] Unhandled: ${er
 process.on('uncaughtException', (err) => console.error(`[ERROR] Uncaught: ${err.message}`));
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────
-process.on('SIGTERM', () => {
-  console.log('[SHUTDOWN] SIGTERM received — shutting down gracefully');
+function shutdown(signal: string): void {
+  console.log(`[SHUTDOWN] ${signal} received — saving stats`);
+  saveStats();
   stopWebServer();
   client.destroy();
   process.exit(0);
-});
+}
 
-process.on('SIGINT', () => {
-  console.log('[SHUTDOWN] SIGINT received — shutting down gracefully');
-  stopWebServer();
-  client.destroy();
-  process.exit(0);
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // ─── Login with Diagnostics ──────────────────────────────────────────
 console.log('═══════════════════════════════════════════');
@@ -705,13 +658,11 @@ console.log(`[BOOT] Token prefix:    ${DISCORD_TOKEN.slice(0, 10)}...`);
 console.log(`[BOOT] Client ID:       ${CLIENT_ID}`);
 console.log(`[BOOT] Guild ID:        ${GUILD_ID}`);
 console.log(`[BOOT] Voice Channel:   ${VOICE_CHANNEL_ID}`);
-console.log('[BOOT] WS compression:  auto (zlib-sync installed)');
 console.log('═══════════════════════════════════════════');
 
-// ─── Test REST API reachability ──────────────────────────────────────
+// ─── Test REST API ───────────────────────────────────────────────────
 (async () => {
   try {
-    console.log('[BOOT] Testing Discord REST API connectivity...');
     const start = Date.now();
     const me = (await rest.get(Routes.user('@me'))) as {
       id?: string;
@@ -749,10 +700,13 @@ client
     console.error(`Message: ${error.message ?? 'Unknown'}`);
     console.error(`Code:    ${error.code ?? 'N/A'}`);
 
-    if (error.message?.includes('TOKEN_INVALID') || error.message?.includes('An invalid token')) {
-      console.error('🔑 DISCORD_TOKEN IS INVALID! → Update in Render Environment');
+    if (
+      error.message?.includes('TOKEN_INVALID') ||
+      error.message?.includes('An invalid token')
+    ) {
+      console.error('🔑 DISCORD_TOKEN IS INVALID!');
     }
     if (error.message?.includes('disallowed intents')) {
-      console.error('🔒 INTENTS ISSUE! → Enable ALL Privileged Intents');
+      console.error('🔒 INTENTS ISSUE! Enable all Privileged Intents');
     }
   });
