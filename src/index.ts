@@ -85,8 +85,14 @@ let refreshing = false;
 
 const welcomeMessages = new Map<string, Message>();
 
-// ─── REST client for reliable operations ─────────────────────────────
+// ─── REST client ─────────────────────────────────────────────────────
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
+// ─── Watchdog State ──────────────────────────────────────────────────
+let lastGatewayEventAt = Date.now();      // last event received
+let lastUserActivityAt = Date.now();      // last interaction/voice event
+let lastRESTSuccessAt = Date.now();       // last successful REST call
+let reconnectAttempts = 0;
 
 // ─── Client ──────────────────────────────────────────────────────────
 const client = new Client({
@@ -95,6 +101,20 @@ const client = new Client({
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMessages,
   ],
+});
+
+// ─── Raw Packet Tracker (for watchdog) ───────────────────────────────
+client.on('raw', (packet: { t?: string }) => {
+  lastGatewayEventAt = Date.now();
+
+  const type = packet.t;
+  if (
+    type === 'INTERACTION_CREATE' ||
+    type === 'VOICE_STATE_UPDATE' ||
+    type === 'MESSAGE_CREATE'
+  ) {
+    lastUserActivityAt = Date.now();
+  }
 });
 
 // ─── Debug Listeners ─────────────────────────────────────────────────
@@ -272,7 +292,7 @@ function buildWelcomeMessage(userId: string, totalMs: number): string {
   ].join('\n');
 }
 
-// ─── Send Welcome Message (via REST — reliable after reconnect) ──────
+// ─── Send Welcome Message (via REST) ─────────────────────────────────
 async function sendWelcomeMessage(userId: string): Promise<void> {
   try {
     console.log(`[WELCOME] Attempting to send for ${userId}...`);
@@ -283,14 +303,12 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       return;
     }
 
-    // Verify channel is a voice channel in target guild
     const channel = guild.channels.cache.get(VOICE_CHANNEL_ID);
     if (!channel || !channel.isVoiceBased()) {
       console.warn(`[WELCOME] ❌ Channel ${VOICE_CHANNEL_ID} not a voice channel`);
       return;
     }
 
-    // Check bot permissions
     const me = guild.members.me;
     if (me) {
       const perms = channel.permissionsFor(me);
@@ -306,7 +324,6 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       }
     }
 
-    // Delete old welcome message for this user
     const oldMsg = welcomeMessages.get(userId);
     if (oldMsg) {
       await oldMsg.delete().catch(() => {});
@@ -316,14 +333,12 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
     const totalMs = getTotalTimeMs(userId);
     const content = buildWelcomeMessage(userId, totalMs);
 
-    // ✅ Send via REST API directly (survives WS reconnect)
     const raw = (await rest.post(Routes.channelMessages(VOICE_CHANNEL_ID), {
       body: { content },
     })) as { id: string; channel_id: string };
 
     console.log(`[WELCOME] ✅ Sent to ${userId} (msg: ${raw.id})`);
 
-    // Try to fetch the message object for tracking
     let tracked = false;
     try {
       const msg = await channel.messages.fetch(raw.id);
@@ -333,7 +348,6 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       console.warn(`[WELCOME] Could not fetch message object: ${fetchErr}`);
     }
 
-    // Auto-delete after 10 minutes
     setTimeout(async () => {
       const current = welcomeMessages.get(userId);
       const targetId = current?.id ?? raw.id;
@@ -358,7 +372,6 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
   }
 }
 
-// ─── Delete Welcome Message ──────────────────────────────────────────
 async function deleteWelcomeMessage(userId: string): Promise<void> {
   const msg = welcomeMessages.get(userId);
   if (!msg) return;
@@ -581,6 +594,80 @@ setInterval(async () => {
     }
   }
 }, 60_000);
+
+// ═════════════════════════════════════════════════════════════════════
+//  WATCHDOG — detects stale Gateway and forces reconnect
+// ═════════════════════════════════════════════════════════════════════
+setInterval(async () => {
+  const now = Date.now();
+  const sinceEvent = now - lastGatewayEventAt;
+  const sinceUserActivity = now - lastUserActivityAt;
+
+  // Ping REST to verify network is alive
+  let restAlive = false;
+  try {
+    await rest.get(Routes.gateway());
+    restAlive = true;
+    lastRESTSuccessAt = now;
+  } catch {
+    restAlive = false;
+  }
+
+  // Log status
+  console.log(
+    `[WATCHDOG] sinceEvent=${Math.round(sinceEvent / 1000)}s · ` +
+      `sinceUserActivity=${Math.round(sinceUserActivity / 1000)}s · ` +
+      `REST=${restAlive ? 'ok' : 'fail'} · ` +
+      `attempts=${reconnectAttempts}`,
+  );
+
+  // Decision: REST works, Gateway is silent, users were recently active
+  const gatewayStale = sinceEvent > 3 * 60 * 1000;       // 3 minutes silent
+  const userWasActive = sinceUserActivity < 10 * 60 * 1000; // within last 10 min
+
+  if (restAlive && gatewayStale && userWasActive) {
+    reconnectAttempts++;
+    console.warn(
+      `[WATCHDOG] ⚠️  Gateway stale for ${Math.round(sinceEvent / 1000)}s — forcing reconnect (attempt ${reconnectAttempts})`,
+    );
+
+    // Force reconnect by destroying the shard — discord.js auto-reconnects
+    try {
+      const ws = client.ws as unknown as {
+        destroy: () => void;
+        shards: Map<number, { destroy: () => void; resume: () => void }>;
+      };
+
+      const shard = ws.shards?.get(0);
+      if (shard) {
+        try {
+          shard.resume();
+        } catch {
+          // ignore
+        }
+      } else if (typeof ws.destroy === 'function') {
+        ws.destroy();
+      }
+
+      lastGatewayEventAt = now; // reset counter
+    } catch (err) {
+      console.error(`[WATCHDOG] Reconnect failed: ${err}`);
+    }
+  }
+
+  // If we've tried reconnecting 3+ times and Gateway is still dead, restart
+  if (reconnectAttempts >= 3 && gatewayStale) {
+    console.error(
+      `[WATCHDOG] 🚨 Gateway still dead after ${reconnectAttempts} attempts — exiting process (Render will restart)`,
+    );
+    process.exit(1);
+  }
+
+  // Reset attempts if the Gateway is healthy again
+  if (!gatewayStale) {
+    reconnectAttempts = 0;
+  }
+}, 2 * 60 * 1000); // every 2 minutes
 
 // ─── Memory Monitor ──────────────────────────────────────────────────
 setInterval(() => {
