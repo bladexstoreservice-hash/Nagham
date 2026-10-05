@@ -85,6 +85,9 @@ let refreshing = false;
 
 const welcomeMessages = new Map<string, Message>();
 
+// ─── REST client for reliable operations ─────────────────────────────
+const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
 // ─── Client ──────────────────────────────────────────────────────────
 const client = new Client({
   intents: [
@@ -269,7 +272,7 @@ function buildWelcomeMessage(userId: string, totalMs: number): string {
   ].join('\n');
 }
 
-// ─── Send Welcome Message ────────────────────────────────────────────
+// ─── Send Welcome Message (via REST — reliable after reconnect) ──────
 async function sendWelcomeMessage(userId: string): Promise<void> {
   try {
     console.log(`[WELCOME] Attempting to send for ${userId}...`);
@@ -280,47 +283,17 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       return;
     }
 
-    // Resolve the voice channel — cache first, fallback to API
-    let voiceChannel: VoiceBasedChannel | null = null;
-
-    const cached = guild.channels.cache.get(VOICE_CHANNEL_ID);
-    if (cached && cached.isVoiceBased()) {
-      voiceChannel = cached;
-    }
-
-    if (!voiceChannel) {
-      console.log(`[WELCOME] Channel not in cache, fetching from API...`);
-      try {
-        const fetched = await client.channels.fetch(VOICE_CHANNEL_ID);
-
-        if (
-          !fetched ||
-          !fetched.isVoiceBased() ||
-          !('guild' in fetched) ||
-          fetched.guild?.id !== GUILD_ID
-        ) {
-          console.warn(
-            `[WELCOME] ❌ Fetched channel is not a voice channel in target guild`,
-          );
-          return;
-        }
-
-        voiceChannel = fetched as VoiceBasedChannel;
-      } catch (err) {
-        console.warn(`[WELCOME] ❌ Failed to fetch channel: ${err}`);
-        return;
-      }
-    }
-
-    if (!voiceChannel) {
-      console.warn(`[WELCOME] ❌ Voice channel unavailable`);
+    // Verify channel is a voice channel in target guild
+    const channel = guild.channels.cache.get(VOICE_CHANNEL_ID);
+    if (!channel || !channel.isVoiceBased()) {
+      console.warn(`[WELCOME] ❌ Channel ${VOICE_CHANNEL_ID} not a voice channel`);
       return;
     }
 
-    // Check bot permissions in this channel
+    // Check bot permissions
     const me = guild.members.me;
     if (me) {
-      const perms = voiceChannel.permissionsFor(me);
+      const perms = channel.permissionsFor(me);
       const canView = perms?.has('ViewChannel') ?? false;
       const canSend = perms?.has('SendMessages') ?? false;
       console.log(
@@ -328,7 +301,7 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       );
 
       if (!canSend) {
-        console.warn(`[WELCOME] ❌ Bot lacks SendMessages permission in this channel!`);
+        console.warn(`[WELCOME] ❌ Bot lacks SendMessages permission`);
         return;
       }
     }
@@ -340,23 +313,43 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
       welcomeMessages.delete(userId);
     }
 
-    // Send welcome message
     const totalMs = getTotalTimeMs(userId);
     const content = buildWelcomeMessage(userId, totalMs);
 
-    const textChannel = voiceChannel as unknown as {
-      send(options: { content: string }): Promise<Message>;
-    };
+    // ✅ Send via REST API directly (survives WS reconnect)
+    const raw = (await rest.post(Routes.channelMessages(VOICE_CHANNEL_ID), {
+      body: { content },
+    })) as { id: string; channel_id: string };
 
-    const msg = await textChannel.send({ content });
-    welcomeMessages.set(userId, msg);
-    console.log(`[WELCOME] ✅ Sent to ${userId} (msg: ${msg.id})`);
+    console.log(`[WELCOME] ✅ Sent to ${userId} (msg: ${raw.id})`);
+
+    // Try to fetch the message object for tracking
+    let tracked = false;
+    try {
+      const msg = await channel.messages.fetch(raw.id);
+      welcomeMessages.set(userId, msg);
+      tracked = true;
+    } catch (fetchErr) {
+      console.warn(`[WELCOME] Could not fetch message object: ${fetchErr}`);
+    }
 
     // Auto-delete after 10 minutes
-    setTimeout(() => {
+    setTimeout(async () => {
       const current = welcomeMessages.get(userId);
-      if (current?.id === msg.id) {
-        msg.delete().catch(() => {});
+      const targetId = current?.id ?? raw.id;
+
+      try {
+        if (current && current.id === raw.id) {
+          await current.delete().catch(() => {});
+        } else if (!tracked) {
+          await rest
+            .delete(Routes.channelMessage(VOICE_CHANNEL_ID, raw.id))
+            .catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+      if (current?.id === targetId) {
         welcomeMessages.delete(userId);
       }
     }, WELCOME_DELETE_AFTER);
@@ -365,14 +358,18 @@ async function sendWelcomeMessage(userId: string): Promise<void> {
   }
 }
 
+// ─── Delete Welcome Message ──────────────────────────────────────────
 async function deleteWelcomeMessage(userId: string): Promise<void> {
   const msg = welcomeMessages.get(userId);
   if (!msg) return;
   try {
     await msg.delete();
     console.log(`[WELCOME] Deleted for ${userId}`);
-  } catch {
-    // ignore
+  } catch (err) {
+    const code = (err as { code?: number })?.code;
+    if (code !== 10008) {
+      console.warn(`[WELCOME] Failed to delete: ${err}`);
+    }
   }
   welcomeMessages.delete(userId);
 }
@@ -389,7 +386,6 @@ client.once(Events.ClientReady, async (readyClient) => {
   console.log(`[MUSIC] Loaded ${allTracks.length} tracks`);
 
   try {
-    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
       body: getCommands(),
     });
@@ -536,7 +532,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (err: unknown) {
     const code = (err as { code?: number })?.code;
 
-    // Ignore expired interactions — normal on slow hosts like Render Free
     if (code === 10062 || code === 40060) {
       console.warn(`[WARN] Interaction expired (${code}) — ignored`);
       return;
@@ -630,9 +625,8 @@ console.log('══════════════════════�
 (async () => {
   try {
     console.log('[BOOT] Testing Discord REST API connectivity...');
-    const testRest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
     const start = Date.now();
-    const me = (await testRest.get(Routes.user('@me'))) as {
+    const me = (await rest.get(Routes.user('@me'))) as {
       id?: string;
       username?: string;
     };
